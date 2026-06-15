@@ -1,5 +1,3 @@
-# bot.py
-
 import asyncio
 import sqlite3
 import requests
@@ -50,7 +48,8 @@ conn.commit()
 menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎬 Kino qidirish")],
-        [KeyboardButton(text="❤️ Favorites")],
+        [KeyboardButton(text="📺 YouTube qidirish")],
+        [KeyboardButton(text="❤️ Saqlanganlar")],
         [KeyboardButton(text="ℹ️ Help")]
     ],
     resize_keyboard=True
@@ -61,36 +60,40 @@ menu = ReplyKeyboardMarkup(
 @dp.message(CommandStart())
 async def start(message: Message):
 
-    text = (
+    await message.answer(
         "🍿 UZBEK CINEMA BOT\n\n"
         "🎬 Kino qidiring\n"
-        "❤️ Favorite saqlang\n"
-        "▶ Trailer ko'ring\n"
-        "🔎 Google orqali toping\n\n"
-        "Menyudan tanlang 👇"
+        "📺 YouTube qidiring\n"
+        "❤️ Saqlanganlar\n"
+        "Menyudan tanlang 👇",
+        reply_markup=menu
     )
-
-    await message.answer(text, reply_markup=menu)
 
 # ================= HELP =================
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
 
-    await message.answer(
-        "/start - Bosh menyu\n"
-        "/search - Kino qidirish\n"
-        "/favorites - Sevimlilar\n"
-        "/help - Yordam"
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👨‍💻 Admin bilan bog'lanish",
+                    url="https://t.me/YOUR_USERNAME"
+                )
+            ]
+        ]
     )
 
-# ================= SEARCH COMMAND =================
+    await message.answer(
+        "🆘 Yordam\n\n"
+        "🎬 Kino qidirish\n"
+        "📺 YouTube qidirish\n"
+        "❤️ Saqlanganlar\n",
+        reply_markup=kb
+    )
 
-@dp.message(Command("search"))
-async def search_cmd(message: Message):
-    await message.answer("🎬 Kino nomini yuboring")
-
-# ================= FAVORITES COMMAND =================
+# ================= FAVORITES =================
 
 @dp.message(Command("favorites"))
 async def favorites_cmd(message: Message):
@@ -103,14 +106,25 @@ async def favorites_cmd(message: Message):
     rows = cur.fetchall()
 
     if not rows:
-        return await message.answer("❌ Favorites bo'sh")
+        return await message.answer("❌ Saqlangan kinolar yo‘q")
 
-    txt = "❤️ Sevimli kinolar:\n\n"
+    text = "❤️ Saqlangan kinolar:\n\n"
 
     for i, row in enumerate(rows, start=1):
-        txt += f"{i}. {row[0]}\n"
+        text += f"{i}. {row[0]}\n"
 
-    await message.answer(txt)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Barchasini o‘chirish",
+                    callback_data="clear_fav"
+                )
+            ]
+        ]
+    )
+
+    await message.answer(text, reply_markup=kb)
 
 # ================= CALLBACK =================
 
@@ -128,23 +142,42 @@ async def callback(call: CallbackQuery):
 
         conn.commit()
 
-        await call.answer("❤️ Favorite saqlandi", show_alert=True)
+        await call.answer("❤️ Saqlandi", show_alert=True)
 
-# ================= MAIN SEARCH =================
+    elif call.data == "clear_fav":
+
+        cur.execute(
+            "DELETE FROM favorites WHERE user_id=?",
+            (str(call.from_user.id),)
+        )
+
+        conn.commit()
+
+        await call.message.edit_text("🗑 Hammasi o‘chirildi")
+
+# ================= MAIN =================
 
 @dp.message()
 async def movie_search(message: Message):
 
     text = message.text.strip()
 
+    # MENU FIX
     if text == "🎬 Kino qidirish":
         return await message.answer("🎬 Kino nomini yozing")
 
-    if text == "❤️ Favorites":
+    if text == "📺 YouTube qidirish":
+        return await message.answer(
+            "📺 YouTube qidirish uchun kino nomini yozing"
+        )
+
+    if text == "❤️ Saqlanganlar":
         return await favorites_cmd(message)
 
     if text == "ℹ️ Help":
         return await help_cmd(message)
+
+    # ================= TMDB SEARCH =================
 
     url = (
         f"{BASE}/search/movie"
@@ -156,7 +189,9 @@ async def movie_search(message: Message):
     try:
         res = requests.get(url, timeout=15).json()
     except:
-        return await message.answer("❌ Server bilan aloqa yo'q")
+        return await message.answer("❌ Internet xato")
+
+    # ================= NOT FOUND =================
 
     if not res.get("results"):
 
@@ -164,17 +199,25 @@ async def movie_search(message: Message):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="🔎 Google'dan qidirish",
-                        url=f"https://www.google.com/search?q={quote(text + ' uzbek dublyaj')}"
+                        text="🔎 Google",
+                        url=f"https://www.google.com/search?q={quote(text)}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📺 YouTube",
+                        url=f"https://www.youtube.com/results?search_query={quote(text + ' kino')}"
                     )
                 ]
             ]
         )
 
         return await message.answer(
-            "❌ Kino topilmadi",
+            "❌ Kino topilmadi\n\nGoogle yoki YouTube'da qidiring 👇",
             reply_markup=kb
         )
+
+    # ================= SHOW RESULTS =================
 
     for movie in res["results"][:3]:
 
@@ -183,100 +226,48 @@ async def movie_search(message: Message):
         overview = movie.get("overview", "")
         poster = movie.get("poster_path")
 
-        try:
-            uz_title = GoogleTranslator(
-                source="auto",
-                target="uz"
-            ).translate(title)
-        except:
-            uz_title = title
-
-        try:
-            uz_overview = GoogleTranslator(
-                source="auto",
-                target="uz"
-            ).translate(overview[:300])
-        except:
-            uz_overview = overview
-
-        trailer = (
-            "https://www.youtube.com/results?search_query="
-            + quote(title + " trailer")
-        )
-
-        watch = (
-            "https://www.google.com/search?q="
-            + quote(title + " uzbek dublyaj")
-        )
+        trailer = "https://www.youtube.com/results?search_query=" + quote(title + " trailer")
+        watch = "https://www.google.com/search?q=" + quote(title)
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(
-                        text="▶ Trailer",
-                        url=trailer
-                    ),
-                    InlineKeyboardButton(
-                        text="🎬 Ko'rish",
-                        url=watch
-                    )
+                    InlineKeyboardButton(text="▶ Trailer", url=trailer),
+                    InlineKeyboardButton(text="🎬 Ko‘rish", url=watch)
                 ],
                 [
                     InlineKeyboardButton(
-                        text="❤️ Favorite",
+                        text="❤️ Saqlash",
                         callback_data=f"fav|{title}"
                     )
                 ]
             ]
         )
 
-        caption = (
-            f"🎬 {uz_title}\n"
-            f"⭐ Reyting: {rating}\n\n"
-            f"📝 {uz_overview[:250]}"
-        )
+        caption = f"🎬 {title}\n⭐ Reyting: {rating}\n\n📝 {overview[:200]}"
 
         if poster:
-            image_url = IMG + poster
-
             await message.answer_photo(
-                photo=image_url,
+                IMG + poster,
                 caption=caption,
                 reply_markup=keyboard
             )
         else:
-            await message.answer(
-                caption,
-                reply_markup=keyboard
-            )
+            await message.answer(caption, reply_markup=keyboard)
 
 # ================= RUN =================
 
 async def main():
 
     await bot.set_my_commands([
-        BotCommand(
-            command="start",
-            description="🏠 Bosh menyu"
-        ),
-        BotCommand(
-            command="search",
-            description="🎬 Kino qidirish"
-        ),
-        BotCommand(
-            command="favorites",
-            description="❤️ Sevimlilar"
-        ),
-        BotCommand(
-            command="help",
-            description="ℹ️ Yordam"
-        )
+        BotCommand(command="start", description="🏠 Menu"),
+        BotCommand(command="favorites", description="❤️ Saqlanganlar"),
+        BotCommand(command="help", description="ℹ️ Help")
     ])
 
-    print("🇺🇿 UZBEK CINEMA BOT ISHLADI")
+    print("BOT ISHLADI...")
 
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-
